@@ -1,0 +1,825 @@
+---
+title: "Time Series Sales"
+author: "Andrew Ross"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Dataset Information Link:
+
+https://www.kaggle.com/competitions/store-sales-time-series-forecasting/data
+
+# Libraries
+
+```{r}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(caret)
+library(lubridate)
+library(forecast)
+library(xts)
+library(lme4)
+library(boot)
+```
+
+# Holiday Events dataset
+
+Holidays and Events, with metadata
+
+NOTE: Pay special attention to the transferred column. A holiday that is transferred officially falls on that calendar day, but was moved to another date by the government. A transferred day is more like a normal day than a holiday. To find the day that it was actually celebrated, look for the corresponding row where type is Transfer. For example, the holiday Independencia de Guayaquil was transferred from 2012-10-09 to 2012-10-12, which means it was celebrated on 2012-10-12. Days that are type Bridge are extra days that are added to a holiday (e.g., to extend the break across a long weekend). These are frequently made up by the type Work Day which is a day not normally scheduled for work (e.g., Saturday) that is meant to payback the Bridge.
+
+Additional holidays are days added a regular calendar holiday, for example, as typically happens around Christmas (making Christmas Eve a holiday).
+
+```{r}
+holiday_data = read.csv("D:\\Kaggle\\Time Series Sales\\holidays_events.csv")
+```
+
+## Structure and summary
+
+```{r}
+str(holiday_data)
+summary(holiday_data)
+```
+
+This dataset has only categorical variables and dates.  
+
+# Holiday: One variable at a time
+
+### date
+
+```{r fig.height=10, fig.width=10}
+ggplot(data = holiday_data, mapping = aes(date)) + geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r}
+for(i in colnames(holiday_data)){
+  print(ggplot(data = holiday_data, mapping = aes_string(color = i))+ geom_bar(mapping = aes(x = date)))
+}
+
+```
+
+Most date times have 1 observation. However some have more than one.  The time
+ranges from March 2nd 2012 to December 26th 2017.  We have over 5 years of dates.
+
+We will separate the variables into a year, month, day to see patterns from these variables.  
+
+#### year
+
+
+```{r}
+#separating date into 3 columns and finding relationships
+ymd = holiday_data |> separate(col = date, sep = '-', into = c('year', 'month', 'day'))
+
+ymd = ymd |> mutate(year = as.numeric(year)) |> mutate(month = as.numeric(month))|> 
+  mutate(day = as.numeric(day))
+
+```
+
+```{r}
+for(i in colnames(ymd)){
+  print(ggplot(data = ymd, mapping = aes_string(fill = i))+ geom_bar(mapping = aes(x = year)))
+}
+```
+
+We don't seem to have any class imbalances.  
+
+Type has mostly holiday followed by additional and event.  Still figuring out what all of this means. 
+
+2016 has the most observations and national is the highest class followed by local then regional.
+
+Most of the data is around equador.  
+
+The transferred variable does not have many true cases of items
+being transferred.  2017 has the highest amount of transfers followed by 2016, 2012-2014.
+
+#### Month
+
+```{r}
+for(i in colnames(ymd)){
+  print(ggplot(data = ymd, mapping = aes_string(fill = i))+ geom_bar(mapping = aes(x = month)))
+}
+```
+
+Definiley some spring, summer and major holiday (thanksgiving and christmas) observations.
+
+Everything from year holds here.
+
+#### day
+
+```{r}
+for(i in colnames(ymd)){
+  print(ggplot(data = ymd, mapping = aes_string(fill = i))+ geom_bar(mapping = aes(x = day)))
+}
+```
+
+It seems most of these things happen between the first 1/3 of the month and the last 1/3.  
+
+##### Seasons
+From the above three, we create a seasons variable.
+
+```{r}
+seasons_holi_ind = ymd |> mutate(season = case_when(month == 12 | month == 01 | month == 02 ~ 'winter',
+                                                    month == 03 | month == 04 | month == 05 ~ 'spring',
+                                                    month == 06 | month == 07 | month == 08 ~ 'summer',
+                                                    month == 09 | month == 10 | month == 11 ~ 'fall')
+                                 )
+
+```
+
+```{r}
+for(i in colnames(seasons_holi_ind)){
+  print(ggplot(data = seasons_holi_ind, mapping = aes_string(fill = i))+ geom_bar(mapping = aes(x = season)))
+}
+```
+
+This project mostly involves the full date time to predict but it could be beneficial to use other things for 
+prediction the response variable.
+
+### type
+
+```{r}
+ggplot(data = holiday_data, mapping = aes(type)) + geom_bar()
+```
+
+```{r}
+for(i in colnames(holiday_data)){
+  print(ggplot(data = holiday_data, mapping = aes_string(fill = i))+ geom_bar(mapping = aes(x = type)))
+}
+```
+
+Holiday dominates this variable.
+
+National is most of all the different types except local. Local dominates holiday.
+
+Ecuador dominates.
+
+transfered are mostly, if not all, in the holiday type.
+
+### locale
+
+```{r}
+for(i in colnames(holiday_data)){
+  print(ggplot(data = holiday_data, mapping = aes_string(fill = i))+ geom_bar(mapping = aes(x = locale)))
+}
+```
+
+Holiday dominates the different locale.  national has all types in it.  Regional only has holiday
+
+Ecuador is all national.  the local has all the colors and regional has a few.  
+
+here true transfers are in the local and national columns.
+
+### locale name
+
+```{r}
+for(i in colnames(holiday_data)){
+  print(ggplot(data = holiday_data, mapping = aes_string(fill = i))+ geom_bar(mapping = aes(x = locale_name))
+        + theme(axis.text.x = element_text(angle = 90))
+        )
+}
+```
+
+
+# Oil Dataset
+
+Daily oil price. Includes values during both the train and test data timeframes. (Ecuador is an oil-dependent 
+country and it's economical health is highly vulnerable to shocks in oil prices.)
+
+```{r}
+oil = read.csv("D:\\Kaggle\\Time Series Sales\\oil.csv")
+
+str(oil)
+summary(oil)
+```
+We have 1218 observations with 43 NA values in dcoilwtico.  
+
+## date
+
+```{r}
+ggplot(data = oil, mapping = aes(x = date))+geom_bar()
+
+ggplot(data = oil, mapping = aes(x = date, y = dcoilwtico))+geom_point() + geom_line()
+```
+
+Below code will be to make the above line plot more visually appropriate
+
+```{r}
+
+oil.2 = oil |> separate(col = date, sep = '-', into = c('year', 'month', 'day'))
+
+
+oil.2 = oil.2 |> mutate(small_date = make_date(year,month, day))
+
+```
+
+
+```{r}
+
+ggplot(data = oil.2, mapping = aes(x = year, y = dcoilwtico))+geom_point() 
+
+ggplot(data = oil.2, mapping = aes(x = month, y = dcoilwtico))+geom_point()
+
+ggplot(data = oil.2, mapping = aes(x = small_date, y = dcoilwtico))+geom_point()  + 
+  theme(axis.text.x = element_text(angle = 90))
+
+
+```
+
+## dcoilwtico
+
+The distribution of dcoilwtico is bimodal. Values before 70 look normally distributed.  Past 70 look lognormally distributed.
+
+```{r}
+ggplot(data = oil.2, mapping = aes(x = dcoilwtico))+geom_histogram()
+
+```
+
+```{r}
+oil.2 |> filter(dcoilwtico < 70) |> ggplot(mapping = aes(x = dcoilwtico)) +geom_density()
+oil.2 |> filter(dcoilwtico > 70) |> ggplot(mapping = aes(x = dcoilwtico)) + geom_histogram()
+
+ntest = oil.2 |> filter(dcoilwtico < 70) 
+shapiro.test(ntest$dcoilwtico)
+ggpubr::ggqqplot(ntest$dcoilwtico)
+```
+
+Turns out the data isn't normally distributed.
+
+After all of this, we will estimate the NA values by applying making each na value the mean of the month
+they are in.  The below code gives us the full dataset for oil
+
+
+```{r}
+meanoil.2 = oil.2 |> group_by(year, month) |> summarise(Mean = mean(dcoilwtico, na.rm = T))
+
+#na = oil.2 |> filter(is.na(dcoilwtico))
+
+oil.3 = inner_join(oil.2, meanoil.2, join_by(year == year, month == month))
+
+oil.3 = oil.3 |> mutate(dcoilwtico = coalesce(dcoilwtico, dcoilwtico, Mean))
+
+
+oil.3$small_date = as.character(oil.3$small_date)
+
+
+
+```
+
+plot of the date and docoilwtico and logcoilwtico
+
+```{r}
+ggplot(data = oil.3, mapping = aes(x = small_date, y = dcoilwtico)) + geom_line()
+
+ggplot(data = oil.3, mapping = aes(x = month, y = log(dcoilwtico))) + geom_line()
+
+```
+
+
+## Modeling dcoilwtico through time series for kicks and giggles
+
+
+
+```{r}
+
+oilts = ts(oil.3$dcoilwtico, start = as.Date(oil.3$small_date))
+
+plot(oilts)
+
+fit = auto.arima(oilts, seasonal = T)
+
+summary(fit)
+
+checkresiduals(fit)
+
+plot(forecast(fit,300))
+
+```
+
+
+# Stores Dataset
+
+Store metadata, including city, state, type, and cluster.
+cluster is a grouping of similar stores.
+
+```{r}
+store = read.csv("D:\\Kaggle\\Time Series Sales\\stores.csv")
+str(store)
+summary(store)
+```
+
+## Store number
+
+```{r}
+ggplot(data = store, mapping = aes(store_nbr)) + geom_bar()
+
+for(i in colnames(store)){
+  print(ggplot(data = store, mapping = aes(x = store_nbr))+geom_bar(mapping = aes_string(fill = i)))
+}
+
+ggplot(data = store, mapping = aes(x = store_nbr, y = cluster, color = as.factor(store_nbr))) + geom_point()
+```
+
+Each store has their own unique identifier.
+
+The other stores seems to be spread out through the identifiers except type A.  They seem to be grouped together.
+
+## city
+
+```{r}
+ggplot(data = store, mapping = aes(x = city)) + geom_bar() + theme(axis.text.x = element_text(angle = 90))
+```
+The majority of these observations are in Quito follwed by Guayaquil.  The rest of the cities seem similar.
+
+
+
+```{r}
+for(i in colnames(store)){
+  print(ggplot(data = store, mapping = aes(x = city))+geom_bar(mapping = aes_string(fill = i))+
+          theme(axis.text.x = element_text(angle = 90)))
+}
+```
+
+```{r}
+ggplot(data = store, mapping = aes(x = city, fill = as.factor(cluster))) + geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+
+
+## type
+
+```{r}
+ggplot(data = store, mapping = aes(type)) + geom_bar()
+```
+
+I have no idea what type means, but the highest to lowest type is D,C,A,B,E
+
+```{r}
+for(i in colnames(store)){
+  print(ggplot(data = store, mapping = aes(x = type))+geom_bar(mapping = aes_string(fill = i))+
+          theme(axis.text.x = element_text(angle = 90)))
+}
+```
+```{r}
+ggplot(data = store, mapping = aes(x = type, fill = as.factor(cluster))) + geom_bar()
+```
+
+
+## Cluster
+
+```{r}
+ggplot(data = store, mapping = aes(cluster)) + geom_bar()
+```
+
+
+```{r}
+for(i in colnames(store)){
+  print(ggplot(data = store, mapping = aes(x = cluster))+geom_bar(mapping = aes_string(fill = i))+
+          theme(axis.text.x = element_text(angle = 90)))
+}
+```
+
+
+# Transaction Dataset
+
+```{r}
+
+tran = read.csv("D:\\Kaggle\\Time Series Sales\\transactions.csv")
+
+str(tran)
+summary(tran)
+
+```
+
+We have 1 character variable and two numeric.  We have 0 NA values
+
+## date
+
+```{r}
+ggplot(data = tran, mapping = aes(x = date)) + geom_bar()
+```
+Most date have multiple transactions
+
+### Splitting up the date
+
+```{r}
+#separating date into 3 columns and finding relationships
+ymd = tran |> separate(col = date, sep = '-', into = c('year', 'month', 'day'))
+
+ymd = ymd |> mutate(year = as.numeric(year)) |> mutate(month = as.numeric(month))|> 
+  mutate(day = as.numeric(day))
+
+ymd = ymd |> mutate(small_date = make_date(year, month))
+
+
+```
+
+```{r}
+
+ggplot(ymd, mapping = aes(x = year, y = transactions)) + geom_point()
+
+ggplot(ymd, mapping = aes(x = month, y = transactions)) + geom_point()
+
+
+ggplot(ymd, mapping = aes(x = small_date, y = transactions)) + geom_point()
+
+```
+
+
+Not much happens with the year and month for transactions.  It's honestly a consistent slope.
+
+# Train data
+
+The training data, comprising time series of features store_nbr, family, and onpromotion as well as the target sales.
+
+store_nbr identifies the store at which the products are sold.
+
+family identifies the type of product sold.
+
+sales gives the total sales for a product family at a particular store at a given date. Fractional values are possible since products can be sold in fractional units (1.5 kg of cheese, for instance, as opposed to 1 bag of chips).
+
+onpromotion gives the total number of items in a product family that were being promoted at a store at a given date.
+
+```{r}
+train = read.csv("D:\\Kaggle\\Time Series Sales\\train.csv")
+
+sub.train = train |> slice_sample(n = 200000)
+
+str(sub.train)
+summary(sub.train)
+
+```
+
+We have a lot of data here. If things take too long, we may consider lowering the sample size even further. 
+We have an id column, a date, store number, family, sales, and onpromotion columns.  4 categorical, 2 numeric.
+We have 0 NA values.
+
+## id
+
+```{r}
+ggplot(data = sub.train, mapping = aes(x = id)) + geom_bar()
+```
+
+## date
+
+```{r}
+
+ymd.train = sub.train |> separate(col = date, sep = '-', into = c('year', 'month', 'day'))
+
+ymd.train = ymd.train |> mutate(small_date = make_date(year,month))
+
+ggplot(data = ymd.train, mapping = aes(x = small_date, y = sales)) + geom_point()
+```
+
+
+
+## family
+
+```{r}
+ggplot(data = sub.train, mapping =aes(x = family)) + geom_bar() + theme(axis.text.x = element_text(angle = 90))
+```
+
+## sales
+
+```{r}
+ggplot(data = train, mapping = aes(x = sales)) + geom_histogram()
+```
+
+Sales is skewed heavily which isn't obnoxious.
+
+### transform sales
+
+```{r}
+ggplot(data = train, mapping = aes(x = log(sales + 10))) + geom_histogram()
+
+```
+
+log transforms do not work.
+
+```{r}
+ggplot(data = sub.train, mapping = aes(x = date, y = sales)) + geom_point()
+```
+
+
+## onpromotion
+
+```{r}
+ggplot(data = sub.train, mapping = aes(x = onpromotion)) + geom_histogram()
+```
+
+
+# Test Data
+
+we will come back to this in time
+
+
+```{r}
+test = read.csv("D:\\Kaggle\\Time Series Sales\\test.csv")
+```
+
+
+
+# Making the full train dataset
+
+After review, the holiday dataset hardly provides us with any good information as most of it makes the data completely empty. We will not
+move forward with this dataset.
+
+```{r}
+
+full = left_join(train, store, by = 'store_nbr')
+
+full = left_join(full, tran, join_by(store_nbr==store_nbr, date == date))
+
+
+full = left_join(full, oil.3, join_by(date == small_date))
+
+full = full |> select(-year, -month, -day, -Mean)
+
+full.sub = full |> slice_sample(n = 300000)
+
+```
+
+## EDA of a subset of the full data
+
+```{r}
+
+str(full.sub)
+summary(full.sub)
+
+```
+
+
+```{r}
+full.sub = full.sub |> separate(col = date, sep = '-', into = c('year', 'month', 'day'), remove = F)
+
+full.sub = full.sub|> mutate(year_month = make_date(year,month))
+
+full.sub$year_month = as.character(full.sub$year_month)
+
+#potential code here to make the new date into a character
+
+```
+
+
+We have na values for points that other datasets did not have.  Therefore, we will estimate the NA values for transaction and dcoilwtico just like before.
+
+Also We will not graph the entire date. Instead, we will look at year and month.
+
+### handling NA values
+
+
+For dcoil, we will keep it consistent and estimate the exact same mean as oil.3
+
+
+
+```{r}
+meanym = full.sub |> group_by(year, month) |> summarise(Mean = mean(dcoilwtico, na.rm = T))
+
+full.sub.2 = inner_join(full.sub, meanym, join_by(year == year, month == month))
+
+full.sub.2 = full.sub.2 |> mutate(dcoilwtico = coalesce(dcoilwtico, dcoilwtico, Mean))
+
+full.sub.2 = full.sub.2 |> select(-Mean) 
+
+```
+
+
+For transaction, 
+
+```{r}
+
+ggplot(data = full.sub.2, mapping = aes(x = transactions)) + geom_histogram()
+
+ggplot(data = full.sub.2, mapping = aes(x = log(transactions))) + geom_histogram()
+
+
+ggplot(data = full.sub.2, mapping = aes(x = year_month,
+       y = transactions)) + geom_point() + theme(axis.text.x = element_text(angle = 90))
+```
+
+
+```{r}
+meanym = full.sub |> group_by(year, month) |> summarise(Mean = mean(transactions, na.rm = T))
+
+full.sub.2 = inner_join(full.sub.2, meanym, join_by(year == year, month == month))
+
+full.sub.2 = full.sub.2 |> mutate(transactions = coalesce(transactions, transactions, Mean))
+
+full.sub.2 = full.sub.2 |> select(-Mean) 
+
+```
+
+I now have 0 NA values and full.sub.2 is my final sub dataset.
+
+##Correlation Matrix
+
+```{r}
+
+cor_mat = cor(full.sub.2 |> select(is.numeric, -id))
+
+pmat = ggcorrplot::cor_pmat(full.sub.2 |> select(is.numeric, -id))
+
+ggcorrplot::ggcorrplot(cor_mat, p.mat = pmat)
+```
+
+### year and month
+
+```{r}
+
+ggplot(data = full.sub.2, mapping = aes(x = year_month)) + geom_bar() +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+This will probably be modeled by a time series. We could predict any stores future sales.
+
+```{r}
+ggplot(data = full.sub.2, mapping = aes(x = year_month, y = sales)) + geom_point() +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+```{r fig.height=10, fig.width=10}
+
+full.sub.2 |> group_by(year_month, store_nbr) |> summarise(Mean = mean(sales)) |>
+
+ggplot(mapping = aes(x = year_month, y = Mean)) + geom_line(aes(group = as.factor(store_nbr),color = factor(store_nbr))) +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+
+```{r}
+
+ggplot(data = full.sub.2, mapping = aes(x = year_month, fill = family)) + geom_bar() +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+```{r}
+ggplot(data = full.sub.2, mapping = aes(x = year_month, y = onpromotion)) + geom_point() +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+Most of the on promotions started in spring of 2014, slowed down for a bit, and picked up may of 2015.
+
+
+```{r}
+ggplot(data = full.sub.2, mapping = aes(x = year_month, fill = city)) + geom_bar() +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+```{r}
+ggplot(data = full.sub.2, mapping = aes(x = year_month, fill = state)) + geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+```{r}
+ggplot(data = full.sub.2, mapping = aes(x = year_month, fill = type)) + geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+## Store number 
+
+```{r}
+
+ggplot(data = full.sub.2, mapping = aes(x = store_nbr, y = sales)) + geom_point()
+```
+
+Maybe we compare the different stores and see which store did the  best on average.
+
+We try regular anova
+
+```{r}
+
+hist(full.sub.2$sales)
+
+hist(sqrt(full.sub.2$sales))
+
+a = car::boxCox(lm(sales ~1, data = full.sub.2), family="yjPower", plotit = TRUE)
+
+hist(car::yjPower(full.sub.2$sales, lambda = -0.1))
+
+
+
+aov.mod = aov(sales ~ as.factor(store_nbr), data = full.sub.2)
+
+summary(aov.mod)
+
+plot(aov.mod)
+
+```
+
+This doesn't work as we cannot get our error terms to be normally distributed.  We can conduct a bootstrap
+techinque to account for more accurate uncertainty
+
+
+```{r}
+
+samps = 1000
+boot_array = array(data = NA, dim = c(samps, 54)) #number of rows and columns
+
+for(j in 1:54){ # j will be the number of classes
+  sn_gen = full.sub.2 |> select(sales, store_nbr) |> 
+    dplyr::filter(store_nbr == unique(full.sub.2$store_nbr)[j]) #This stores the unique values as they occur in the column
+  
+  for(i in 1:samps){
+  
+   boot_array[i,j] = sample(sn_gen$sales, 
+                         size = length(sn_gen$sales), 
+                         replace = T) |>
+     mean()
+  
+  }
+}
+
+boot_array = as.data.frame(boot_array)
+
+colnames(boot_array) = unique(full.sub.2$store_nbr)
+
+```
+
+```{r fig.height=7, fig.width=10}
+
+boot_array %>% gather(store_nbr, sales) |> group_by(store_nbr) |> 
+  summarise(Mean = mean(sales), lq = quantile(sales, probs = 0.025), uq = quantile(sales, probs = 0.975)) |>
+  ggplot(mapping = aes(x = store_nbr, y = Mean)) + geom_col() + geom_errorbar(aes(ymin = lq, ymax = uq))
+
+
+```
+
+After a lot of work, we conduct a 1000 resampled bootstrap procedure for the mean number of sales for each store.  We can see how the stores are performing without a higher level detail.
+
+
+```{r}
+
+table(full.sub.2$store_nbr, full.sub.2$family)
+
+```
+
+Each store sells about the same stuff as the rest. We can do what we did before and break this down to compare the stores.
+
+```{r}
+full.sub.2 |> select(sales, store_nbr, family) |> group_by(store_nbr, family) |> 
+  summarise(Mean = mean(sales), .groups = 'keep')
+```
+
+Lets try a more complicated anova. Probably a lmm using store as a random effect. may even try glmer
+
+```{r fig.height=8, fig.width=10}
+
+full.sub.2 |> select(sales, store_nbr, family) |> #group_by(store_nbr, family) |> 
+  #summarise(Mean = mean(sales), .groups = 'keep') |>
+  ggplot(mapping = aes(x = store_nbr, y = sales, color = as.factor(family))) + geom_point()
+
+```
+
+```{r}
+
+lmm = lmer(sales ~ as.factor(family) + (1|store_nbr), data = full.sub.2)
+
+summary(lmm)
+
+ggpubr::ggqqplot(residuals(lmm))
+
+ggpubr::ggqqplot(summary(lmm)$re)
+
+```
+
+
+This model is not appropriate so a bootstrap technique could be used here as well
+
+
+Which stores are doing more onpromotions?
+
+```{r}
+
+ggplot(data = full.sub.2, mapping = aes(x = store_nbr, y = onpromotion)) + geom_point()
+
+full.sub.2 |> group_by(store_nbr) |> summarise(total = sum(onpromotion)) |>
+  ggplot(mapping = aes(x = store_nbr, y = total)) + geom_point()
+
+
+
+```
+
+
+```{r}
+ggplot(data = full.sub.2, mapping = aes(x = store_nbr, fill = city)) + geom_bar()
+```
+
+```{r}
+ggplot(data = full.sub.2, mapping = aes(x = store_nbr, fill = as.factor(cluster))) + geom_bar()
+```
+
